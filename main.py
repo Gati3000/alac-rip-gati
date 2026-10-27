@@ -13,33 +13,52 @@ AMD_DIR = PROJECT_DIR / "apple-music-downloader"
 def firstsetup():
     # --- Check for root ---
     if os.geteuid() != 0:
-        print("ERROR: This script must be run as root. Exiting.")
+        print("ERROR: This script must be run as root. Exiting...")
         sys.exit(1)
 
     try:
         # Step 1: Install required packages
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        apt = ["apt-get", "-y", "-o", "Acquire::Retries=3", "-o", "Dpkg::Lock::Timeout=60"]
+
+        subprocess.run([*apt, "update"], check=True, env=env)
         subprocess.run(
-            ["apt-get", "install", "-y", "git", "ffmpeg", "gpac", "golang-go", "wget","python3-flask","python3-yaml"],
-            check=True
+            [*apt, "install", "git", "ffmpeg", "gpac", "golang-go", "wget",
+             "python3-flask", "python3-yaml"],
+            check=True,
+            env=env,
         )
+
         print("Packages installed successfully.")
 
-        # Step 2: Download and set up Bento4
+                # Step 2: Download and set up Bento4
         BENTO4_URL = "https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip"
         zip_path = PROJECT_DIR / "bento4.zip"
 
         if not BENTO4_DIR.exists():
-            print(f"Downloading Bento4 from {BENTO4_URL}...")
-            urllib.request.urlretrieve(BENTO4_URL, zip_path)
-            print("Extracting Bento4...")
+            try:
+                print(f"Downloading Bento4 from {BENTO4_URL}...")
+                req = urllib.request.Request(
+                    BENTO4_URL,
+                    headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out:
+                    shutil.copyfileobj(resp, out)
 
-            BENTO4_DIR.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(BENTO4_DIR)
-            os.remove(zip_path)
+                print("Extracting Bento4...")
+                BENTO4_DIR.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    zip_ref.extractall(BENTO4_DIR)
 
-            print("Bento4 installed inside project folder.")
-            
+                print("Bento4 installed inside project folder.")
+            except Exception:
+                # nie zostawiaj pustego/połowicznego katalogu, bo kolejny run pominie ten krok
+                shutil.rmtree(BENTO4_DIR, ignore_errors=True)
+                raise
+            finally:
+                if zip_path.exists():
+                    os.remove(zip_path)
+
             # Create symbolic links to Bento4 tools in /usr/local/bin
             bin_candidates = list(BENTO4_DIR.glob("Bento4*"))
             if bin_candidates:
