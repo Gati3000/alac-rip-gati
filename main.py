@@ -4,11 +4,55 @@ import urllib.request
 import zipfile
 from pathlib import Path
 import sys
+import tempfile
+import shutil
 
+GPAC_VER = "v2.4.0"
 PROJECT_DIR = Path(__file__).resolve().parent
 BENTO4_DIR = PROJECT_DIR / "bento4"
 WRAPPER_DIR = PROJECT_DIR / "wrapper"
 AMD_DIR = PROJECT_DIR / "apple-music-downloader"
+
+# Gpac installation cuz its not fckin workin
+def install_gpac(apt, env):
+    """Installing GPAC for MP4Box"""
+    if shutil.which("MP4Box"):
+        print("MP4Box is Installed <3")
+        return
+    has_pkg = subprocess.run(
+        ["apt-cache", "show", "gpac"],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+    if has_pkg:
+        r = subprocess.run([*apt, "install", "gpac"], env=env)
+        if r.returncode == 0 and shutil.which("MP4Box"):
+            print("GPAC Installed from APT.")
+            return
+                
+    print(f"GPAC is unavailable from APT.\nInstalling from source\n{GPAC_VER}\n")
+    subprocess.run(
+        [*apt, "install", "build-essential", "pkg-config", "git", "zlib1g-dev"],
+        check=True, env=env,
+)
+
+    build_dir = tempfile.mkdtemp(prefix="gpac-build-") 
+    try:
+        src = os.path.join(build_dir, "gpac")
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", GPAC_VER,
+            "https://github.com/gpac/gpac.git", src],
+            check=True, env=env,
+        )
+        subprocess.run(["./configure", "--static-bin"], cwd=src, check=True)
+        subprocess.run(["make", f"-j{os.cpu_count() or 1}"], cwd=src, check=True)
+        subprocess.run(["make", "install"], cwd=src, check=True)
+    finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
+    if not shutil.which("MP4Box"):
+        raise RuntimeError("GPAC is built but MP4Box is not in the PATH.")
+    print("GPAC is Ready")
+
 
 def firstsetup():
     # --- Check for root ---
@@ -23,11 +67,13 @@ def firstsetup():
 
         subprocess.run([*apt, "update"], check=True, env=env)
         subprocess.run(
-            [*apt, "install", "git", "ffmpeg", "gpac", "golang-go", "wget",
+            [*apt, "install", "git", "ffmpeg", "golang-go", "wget",
              "python3-flask", "python3-yaml"],
             check=True,
             env=env,
         )
+     
+        install_gpac(apt, env)
 
         print("Packages installed successfully.")
 
