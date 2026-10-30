@@ -98,7 +98,6 @@ def firstsetup():
 
                 print("Bento4 installed inside project folder.")
             except Exception:
-                # nie zostawiaj pustego/połowicznego katalogu, bo kolejny run pominie ten krok
                 shutil.rmtree(BENTO4_DIR, ignore_errors=True)
                 raise
             finally:
@@ -209,18 +208,25 @@ def firstsetup():
                     print(f"Added existing Bento4 bin to current session PATH: {bin_dir}")
 
         # Step 3: Download and extract wrapper
-        WRAPPER_URL = "https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.x86_64.0df45b5/Wrapper.x86_64.0df45b5.zip"
+        WRAPPER_URL = "https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.x86_64.latest/Wrapper.x86_64.latest.zip"
         wrapper_zip = PROJECT_DIR / "wrapper.x86_64.zip"
 
         if not WRAPPER_DIR.exists():
             print(f"Downloading wrapper from {WRAPPER_URL}...")
-            urllib.request.urlretrieve(WRAPPER_URL, wrapper_zip)
-            print("Extracting wrapper...")
-
-            WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(wrapper_zip, "r") as zip_ref:
-                zip_ref.extractall(WRAPPER_DIR)
-            os.remove(wrapper_zip)
+            req = urllib.request.Request(WRAPPER_URL, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp, open(wrapper_zip, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+                print("Extracting wrapper...")
+                WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(wrapper_zip, "r") as zip_ref:
+                    zip_ref.extractall(WRAPPER_DIR)
+            except Exception:
+                shutil.rmtree(WRAPPER_DIR, ignore_errors=True)
+                raise
+            finally:
+                if wrapper_zip.exists():
+                    os.remove(wrapper_zip)
 
             # Ensure the wrapper binary is executable (running as root, so no sudo needed)
             wrapper_bin = WRAPPER_DIR / "wrapper"
