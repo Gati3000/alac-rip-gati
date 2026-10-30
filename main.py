@@ -4,42 +4,106 @@ import urllib.request
 import zipfile
 from pathlib import Path
 import sys
+import tempfile
+import shutil
 
+GPAC_VER = "v2.4.0"
 PROJECT_DIR = Path(__file__).resolve().parent
 BENTO4_DIR = PROJECT_DIR / "bento4"
 WRAPPER_DIR = PROJECT_DIR / "wrapper"
 AMD_DIR = PROJECT_DIR / "apple-music-downloader"
 
+# Gpac installation cuz its not fckin workin
+def install_gpac(apt, env):
+    """Installing GPAC for MP4Box"""
+    if shutil.which("MP4Box"):
+        print("MP4Box is Installed <3")
+        return
+    has_pkg = subprocess.run(
+        ["apt-cache", "show", "gpac"],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+    if has_pkg:
+        r = subprocess.run([*apt, "install", "gpac"], env=env)
+        if r.returncode == 0 and shutil.which("MP4Box"):
+            print("GPAC Installed from APT.")
+            return
+                
+    print(f"GPAC is unavailable from APT.\nInstalling from source\n{GPAC_VER}\n")
+    subprocess.run(
+        [*apt, "install", "build-essential", "pkg-config", "git", "zlib1g-dev"],
+        check=True, env=env,
+)
+
+    build_dir = tempfile.mkdtemp(prefix="gpac-build-") 
+    try:
+        src = os.path.join(build_dir, "gpac")
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", GPAC_VER,
+            "https://github.com/gpac/gpac.git", src],
+            check=True, env=env,
+        )
+        subprocess.run(["./configure", "--static-bin"], cwd=src, check=True)
+        subprocess.run(["make", f"-j{os.cpu_count() or 1}"], cwd=src, check=True)
+        subprocess.run(["make", "install"], cwd=src, check=True)
+    finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
+    if not shutil.which("MP4Box"):
+        raise RuntimeError("GPAC is built but MP4Box is not in the PATH.")
+    print("GPAC is Ready")
+
+
 def firstsetup():
     # --- Check for root ---
     if os.geteuid() != 0:
-        print("ERROR: This script must be run as root. Exiting.")
+        print("ERROR: This script must be run as root. Exiting...")
         sys.exit(1)
 
     try:
         # Step 1: Install required packages
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        apt = ["apt-get", "-y", "-o", "Acquire::Retries=3", "-o", "Dpkg::Lock::Timeout=60"]
+
+        subprocess.run([*apt, "update"], check=True, env=env)
         subprocess.run(
-            ["apt-get", "install", "-y", "git", "ffmpeg", "gpac", "golang-go", "wget","python3-flask","python3-yaml"],
-            check=True
+            [*apt, "install", "git", "ffmpeg", "golang-go", "wget",
+             "python3-flask", "python3-yaml"],
+            check=True,
+            env=env,
         )
+     
+        install_gpac(apt, env)
+
         print("Packages installed successfully.")
 
-        # Step 2: Download and set up Bento4
+                # Step 2: Download and set up Bento4
         BENTO4_URL = "https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip"
         zip_path = PROJECT_DIR / "bento4.zip"
 
         if not BENTO4_DIR.exists():
-            print(f"Downloading Bento4 from {BENTO4_URL}...")
-            urllib.request.urlretrieve(BENTO4_URL, zip_path)
-            print("Extracting Bento4...")
+            try:
+                print(f"Downloading Bento4 from {BENTO4_URL}...")
+                req = urllib.request.Request(
+                    BENTO4_URL,
+                    headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out:
+                    shutil.copyfileobj(resp, out)
 
-            BENTO4_DIR.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(BENTO4_DIR)
-            os.remove(zip_path)
+                print("Extracting Bento4...")
+                BENTO4_DIR.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    zip_ref.extractall(BENTO4_DIR)
 
-            print("Bento4 installed inside project folder.")
-            
+                print("Bento4 installed inside project folder.")
+            except Exception:
+                shutil.rmtree(BENTO4_DIR, ignore_errors=True)
+                raise
+            finally:
+                if zip_path.exists():
+                    os.remove(zip_path)
+
             # Create symbolic links to Bento4 tools in /usr/local/bin
             bin_candidates = list(BENTO4_DIR.glob("Bento4*"))
             if bin_candidates:
@@ -144,18 +208,25 @@ def firstsetup():
                     print(f"Added existing Bento4 bin to current session PATH: {bin_dir}")
 
         # Step 3: Download and extract wrapper
-        WRAPPER_URL = "https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.x86_64.0df45b5/Wrapper.x86_64.0df45b5.zip"
+        WRAPPER_URL = "https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.x86_64.latest/Wrapper.x86_64.latest.zip"
         wrapper_zip = PROJECT_DIR / "wrapper.x86_64.zip"
 
         if not WRAPPER_DIR.exists():
             print(f"Downloading wrapper from {WRAPPER_URL}...")
-            urllib.request.urlretrieve(WRAPPER_URL, wrapper_zip)
-            print("Extracting wrapper...")
-
-            WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(wrapper_zip, "r") as zip_ref:
-                zip_ref.extractall(WRAPPER_DIR)
-            os.remove(wrapper_zip)
+            req = urllib.request.Request(WRAPPER_URL, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp, open(wrapper_zip, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+                print("Extracting wrapper...")
+                WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(wrapper_zip, "r") as zip_ref:
+                    zip_ref.extractall(WRAPPER_DIR)
+            except Exception:
+                shutil.rmtree(WRAPPER_DIR, ignore_errors=True)
+                raise
+            finally:
+                if wrapper_zip.exists():
+                    os.remove(wrapper_zip)
 
             # Ensure the wrapper binary is executable (running as root, so no sudo needed)
             wrapper_bin = WRAPPER_DIR / "wrapper"
