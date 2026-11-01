@@ -381,19 +381,41 @@ function loadDownloadFolders() {
 // Load download folders on page load
 loadDownloadFolders();
 
-// Handle Special Audio checkbox toggle
-document.getElementById('special-audio').addEventListener('change', function() {
-    const formatOptions = document.getElementById('format-options');
-    const radioButtons = formatOptions.querySelectorAll('input[type="radio"]');
-    
-    if (this.checked) {
-        formatOptions.style.opacity = '1';
-        radioButtons.forEach(radio => radio.disabled = false);
-    } else {
-        formatOptions.style.opacity = '0.5';
-        radioButtons.forEach(radio => radio.disabled = true);
-    }
+// Special Audio - changed it cuz it wasnt saving 
+const specialAudioBox = document.getElementById('special-audio');
+const formatOptions = document.getElementById('format-options');
+
+function applySpecialAudioState() {
+    const on = specialAudioBox.checked;
+    formatOptions.style.opacity = on ? '1' : '0.5';
+    formatOptions.querySelectorAll('input[type="radio"]').forEach(r => r.disabled = !on);
+}
+
+function saveAudioPrefs() {
+    axios.post('/save_prefs', {
+        special_audio: specialAudioBox.checked,
+        format: document.querySelector("input[name='format']:checked")?.value
+    });
+}
+
+function loadAudioPrefs() {
+    axios.get('/get_prefs').then(res => {
+        specialAudioBox.checked = res.data.special_audio;
+        const radio = document.querySelector(`input[name='format'][value='${res.data.format}']`);
+        if (radio) radio.checked = true;
+        applySpecialAudioState();
+    });
+}
+
+specialAudioBox.addEventListener('change', () => {
+    applySpecialAudioState();
+    saveAudioPrefs();
 });
+formatOptions.querySelectorAll('input[type="radio"]').forEach(r =>
+    r.addEventListener('change', saveAudioPrefs)
+);
+
+loadAudioPrefs();
 
 // 2FA Modal Functionality
 function show2FAModal() {
