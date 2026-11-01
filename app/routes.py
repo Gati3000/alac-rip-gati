@@ -56,7 +56,7 @@ def stream_wrapper_logs(pipe, target_list, email=None, password=None, auto_login
                     target_list.append("2FA required - please enter your code")
                     
                 # Check for successful login message
-                if "[.] response type 6" in line:
+                if "response type 6" in line or "account info cached successfully" in line:
                     wrapper_running = True
                     wrapper_needs_2fa = False
                     login_successful = True
