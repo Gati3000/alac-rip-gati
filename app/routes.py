@@ -409,9 +409,9 @@ def save_config():
             if key in integer_fields:
                 default = integer_defaults.get(key, 0)
                 try:
-                    config_data[key] = int(value) if value else deafult
+                    config_data[key] = int(value) if value else default
                 except (ValueError, TypeError):
-                    config_data[key] = deafult
+                    config_data[key] = default
             elif key in boolean_fields:
                 # Handle boolean conversion
                 if isinstance(value, str):
