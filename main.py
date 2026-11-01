@@ -1,19 +1,89 @@
 import os
+import platform
+import re
+import tarfile
 import subprocess
 import urllib.request
 import zipfile
-from pathlib import Path
 import sys
 import tempfile
 import shutil
+from pathlib import Path
 
 GPAC_VER = "v2.4.0"
 PROJECT_DIR = Path(__file__).resolve().parent
 BENTO4_DIR = PROJECT_DIR / "bento4"
 WRAPPER_DIR = PROJECT_DIR / "wrapper"
 AMD_DIR = PROJECT_DIR / "apple-music-downloader"
+GO_ROOT = Path("/usr/local/go")
+GO_MIN_VERSION = (1, 23, 1)
 
-# Gpac installation cuz its not fckin workin
+#Step: 1 Installation Segment
+#Task: 1 Go Installation and also automatic update
+def _parse_go_version(text):
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    return tuple(int(x or 0) for x in m.groups()) if m else None
+
+def _installed_go_version():
+    go_bin = shutil.which("go") or str(GO_ROOT / "bin" / "go")
+    try:
+        out = subprocess.run([go_bin, "version"], capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_go_version(out.replace("go version go", ""))
+
+def _required_go_version():
+    required = GO_MIN_VERSION
+    gomod = PROJECT_DIR / "apple-music-downloader" / "go.mod"
+    try:
+        m = re.search(r"^go\s+(\d+\.\d+(?:\.\d+)?)", gomod.read_text(), re.MULTILINE)
+        if m:
+            required = max(required, _parse_go_version(m.group(1)))
+    except OSError:
+        pass
+    return required
+
+def ensure_go():
+    """Checking Go version and updateing if needed."""
+    os.environ["PATH"] = f"{GO_ROOT / 'bin'}:{os.environ['PATH']}"
+
+    required = _required_go_version()
+    installed = _installed_go_version()
+    req_str = ".".join(map(str, required))
+
+    if installed and installed >= required:
+        print(f"INFO: Go {'.'.join(map(str, installed))} OK (Required >= {req_str})")
+        return True
+
+    inst_str = ".".join(map(str, installed)) if installed else "brak"
+    print(f"INFO: Go {inst_str} jest za stare (Required >= {req_str}), Updateing...")
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
+    if not arch:
+        print(f"WARN: Wrong platform: {platform.machine()}")
+        return False
+
+    tmp = Path("/tmp/go-update.tar.gz")
+    try:
+        with urllib.request.urlopen("https://go.dev/VERSION?m=text", timeout=30) as r:
+            latest = r.read().decode().splitlines()[0].strip()
+        url = f"https://go.dev/dl/{latest}.linux-{arch}.tar.gz"
+        print(f"Download {url}...")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out)
+        shutil.rmtree(GO_ROOT, ignore_errors=True)
+        with tarfile.open(tmp, "r:gz") as tar:
+            tar.extractall("/usr/local")
+        print(f"INFO: Updated {latest}")
+        return True
+    except Exception as e:
+        print(f"WARN: Update didnt come throu: {e}")
+        return False
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+#Task: 2 Gpac installation cuz its not fckin workin
 def install_gpac(apt, env):
     """Installing GPAC for MP4Box"""
     if shutil.which("MP4Box"):
@@ -55,29 +125,33 @@ def install_gpac(apt, env):
 
 
 def firstsetup():
-    # --- Check for root ---
+    #Task: 3 Check for root
     if os.geteuid() != 0:
         print("ERROR: This script must be run as root. Exiting...")
         sys.exit(1)
 
     try:
-        # Step 1: Install required packages
+        
+        #Task: 4 Install rest of packages
         env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
         apt = ["apt-get", "-y", "-o", "Acquire::Retries=3", "-o", "Dpkg::Lock::Timeout=60"]
 
         subprocess.run([*apt, "update"], check=True, env=env)
         subprocess.run(
-            [*apt, "install", "git", "ffmpeg", "golang-go", "wget",
+            [*apt, "install", "git", "ffmpeg", "wget",
              "python3-flask", "python3-yaml"],
             check=True,
             env=env,
         )
+
+        if not ensure_go():
+            raise RuntimeError("Couldn't install Go")
      
         install_gpac(apt, env)
 
         print("Packages installed successfully.")
 
-                # Step 2: Download and set up Bento4
+                #Task: 5 Download and set up Bento4
         BENTO4_URL = "https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip"
         zip_path = PROJECT_DIR / "bento4.zip"
 
@@ -271,6 +345,7 @@ def start():
         os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
 
     os.environ["PATH"] = f"{WRAPPER_DIR}:{os.environ['PATH']}"
+    ensure_go()
 
     # Import and run the Flask app
     from app import app   # FIXED: no double "app.app"
