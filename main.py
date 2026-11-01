@@ -17,6 +17,7 @@ WRAPPER_DIR = PROJECT_DIR / "wrapper"
 AMD_DIR = PROJECT_DIR / "apple-music-downloader"
 GO_ROOT = Path("/usr/local/go")
 GO_MIN_VERSION = (1, 23, 1)
+AMD_BRANCH = "v1"
 
 #Step: 1 Installation Segment
 #Task: 1 Go Installation and also automatic update
@@ -83,7 +84,38 @@ def ensure_go():
         if tmp.exists():
             tmp.unlink()
 
-#Task: 2 Gpac installation cuz its not fckin workin
+#Task: 2 IDK
+def ensure_downloader_compat():
+    """Keeps the downloader on a branch compatible with the old wrapper and fills empty wrapper ports."""
+    if not AMD_DIR.exists():
+        return
+    try:
+        cur = subprocess.run(
+            ["git", "-C", str(AMD_DIR), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        if cur != AMD_BRANCH:
+            print(f"INFO: Downloader on branch '{cur}', switching to '{AMD_BRANCH}'...")
+            subprocess.run(["git", "-C", str(AMD_DIR), "fetch", "origin", AMD_BRANCH], check=True, timeout=120)
+            subprocess.run(["git", "-C", str(AMD_DIR), "checkout", "-B", AMD_BRANCH, f"origin/{AMD_BRANCH}"], check=True, timeout=60)
+        else:
+            print(f"INFO: Downloader on branch {AMD_BRANCH} OK")
+    except Exception as e:
+        print(f"WARN: Could not check downloader branch: {e}")
+
+    cfg = AMD_DIR / "config.yaml"
+    try:
+        if cfg.exists():
+            text = cfg.read_text()
+            new = re.sub(r"^decrypt-m3u8-port:[ \t]*(''|\"\")?[ \t]*$", 'decrypt-m3u8-port: "127.0.0.1:10020"', text, flags=re.MULTILINE)
+            new = re.sub(r"^get-m3u8-port:[ \t]*(''|\"\")?[ \t]*$", 'get-m3u8-port: "127.0.0.1:20020"', new, flags=re.MULTILINE)
+            if new != text:
+                cfg.write_text(new)
+                print("INFO: Filled empty wrapper ports in config.yaml")
+    except OSError as e:
+        print(f"WARN: Could not modify config.yaml: {e}")
+
+#Task: 3 Gpac installation cuz its not fckin workin
 def install_gpac(apt, env):
     """Installing GPAC for MP4Box"""
     if shutil.which("MP4Box"):
@@ -275,7 +307,7 @@ def firstsetup():
                             os.symlink(exe_file, link_path)
                             print(f"  Created symlink: {exe_file.name}")
                     else:
-                        print("✅ Bento4 tools already available system-wide")
+                        print("Bento4 tools already available system-wide")
                         
                 except Exception as e:
                     print(f"WARN: Could not verify/create symbolic links: {e}")
@@ -322,7 +354,7 @@ def firstsetup():
         if not AMD_DIR.exists():
             print("Cloning Apple Music Downloader...")
             subprocess.run(
-                ["git", "clone", "https://github.com/zhaarey/apple-music-downloader", str(AMD_DIR)],
+                ["git", "clone", "--branch", "v1", "https://github.com/zhaarey/apple-music-downloader", str(AMD_DIR)],
                 check=True
             )
             print("Apple Music Downloader cloned inside project folder")
