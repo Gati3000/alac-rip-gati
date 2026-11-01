@@ -403,12 +403,15 @@ def save_config():
             return path
         
         # Convert data types properly
+        integer_defaults = {'limit-max': 200}
+        
         for key, value in config_data.items():
             if key in integer_fields:
+                default = integer_defaults.get(key, 0)
                 try:
-                    config_data[key] = int(value) if value else 0
+                    config_data[key] = int(value) if value else deafult
                 except (ValueError, TypeError):
-                    config_data[key] = 0
+                    config_data[key] = deafult
             elif key in boolean_fields:
                 # Handle boolean conversion
                 if isinstance(value, str):
