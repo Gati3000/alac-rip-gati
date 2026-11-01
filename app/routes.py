@@ -13,6 +13,11 @@ wrapper_running = False
 wrapper_needs_2fa = False
 download_process = None
 download_running = False
+DEFAULT_PREFS = {"special_audio": True, "format": "ATMOS"}
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+USER_DIR = os.path.join(os.path.dirname(PROJECT_DIR), "The Reaper", "User")
+
 
 def stream_download_logs(pipe, target_list):
     """Thread target to read logs from download process and store them."""
@@ -56,7 +61,7 @@ def stream_wrapper_logs(pipe, target_list, email=None, password=None, auto_login
                     target_list.append("2FA required - please enter your code")
                     
                 # Check for successful login message
-                if "[.] response type 6" in line:
+                if "response type 6" in line or "account info cached successfully" in line:
                     wrapper_running = True
                     wrapper_needs_2fa = False
                     login_successful = True
@@ -403,12 +408,15 @@ def save_config():
             return path
         
         # Convert data types properly
+        integer_defaults = {'limit-max': 200}
+        
         for key, value in config_data.items():
             if key in integer_fields:
+                default = integer_defaults.get(key, 0)
                 try:
-                    config_data[key] = int(value) if value else 0
+                    config_data[key] = int(value) if value else default
                 except (ValueError, TypeError):
-                    config_data[key] = 0
+                    config_data[key] = default
             elif key in boolean_fields:
                 # Handle boolean conversion
                 if isinstance(value, str):
@@ -467,5 +475,34 @@ def get_download_folders():
         }
         
         return jsonify({"status": "ok", "folders": folders})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+def get_prefs_path():
+    os.makedirs(USER_DIR, exist_ok=True)
+    return os.path.join(USER_DIR, "prefs.json")
+
+@app.route("/get_prefs")
+def get_prefs():
+    prefs = dict(DEFAULT_PREFS)
+    try:
+        with open(get_prefs_path(), 'r') as f:
+            prefs.update(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return jsonify(prefs)
+
+@app.route("/save_prefs", methods=["POST"])
+def save_prefs():
+    data = request.json or {}
+    fmt = data.get("format")
+    prefs = {
+        "special_audio": bool(data.get("special_audio", True)),
+        "format": fmt if fmt in ("ATMOS", "AAC") else "ATMOS"
+    }
+    try:
+        with open(get_prefs_path(), 'w') as f:
+            json.dump(prefs, f)
+        return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)})

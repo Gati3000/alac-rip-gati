@@ -1,45 +1,215 @@
 import os
+import platform
+import re
+import tarfile
 import subprocess
 import urllib.request
 import zipfile
-from pathlib import Path
 import sys
+import tempfile
+import shutil
+from pathlib import Path
 
+GPAC_VER = "v2.4.0"
 PROJECT_DIR = Path(__file__).resolve().parent
 BENTO4_DIR = PROJECT_DIR / "bento4"
 WRAPPER_DIR = PROJECT_DIR / "wrapper"
 AMD_DIR = PROJECT_DIR / "apple-music-downloader"
+GO_ROOT = Path("/usr/local/go")
+GO_MIN_VERSION = (1, 23, 1)
+AMD_BRANCH = "v1"
+
+#Step: 1 Installation Segment
+#Task: 1 Go Installation and also automatic update
+def _parse_go_version(text):
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    return tuple(int(x or 0) for x in m.groups()) if m else None
+
+def _installed_go_version():
+    go_bin = shutil.which("go") or str(GO_ROOT / "bin" / "go")
+    try:
+        out = subprocess.run([go_bin, "version"], capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_go_version(out.replace("go version go", ""))
+
+def _required_go_version():
+    required = GO_MIN_VERSION
+    gomod = PROJECT_DIR / "apple-music-downloader" / "go.mod"
+    try:
+        m = re.search(r"^go\s+(\d+\.\d+(?:\.\d+)?)", gomod.read_text(), re.MULTILINE)
+        if m:
+            required = max(required, _parse_go_version(m.group(1)))
+    except OSError:
+        pass
+    return required
+
+def ensure_go():
+    """Checking Go version and updateing if needed."""
+    os.environ["PATH"] = f"{GO_ROOT / 'bin'}:{os.environ['PATH']}"
+
+    required = _required_go_version()
+    installed = _installed_go_version()
+    req_str = ".".join(map(str, required))
+
+    if installed and installed >= required:
+        print(f"INFO: Go {'.'.join(map(str, installed))} OK (Required >= {req_str})")
+        return True
+
+    inst_str = ".".join(map(str, installed)) if installed else "brak"
+    print(f"INFO: Go {inst_str} jest za stare (Required >= {req_str}), Updateing...")
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
+    if not arch:
+        print(f"WARN: Wrong platform: {platform.machine()}")
+        return False
+
+    tmp = Path("/tmp/go-update.tar.gz")
+    try:
+        with urllib.request.urlopen("https://go.dev/VERSION?m=text", timeout=30) as r:
+            latest = r.read().decode().splitlines()[0].strip()
+        url = f"https://go.dev/dl/{latest}.linux-{arch}.tar.gz"
+        print(f"Download {url}...")
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp, open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out)
+        shutil.rmtree(GO_ROOT, ignore_errors=True)
+        with tarfile.open(tmp, "r:gz") as tar:
+            tar.extractall("/usr/local")
+        print(f"INFO: Updated {latest}")
+        return True
+    except Exception as e:
+        print(f"WARN: Update didnt come throu: {e}")
+        return False
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+#Task: 2 IDK
+def ensure_downloader_compat():
+    """Keeps the downloader on a branch compatible with the old wrapper and fills empty wrapper ports."""
+    if not AMD_DIR.exists():
+        return
+    try:
+        cur = subprocess.run(
+            ["git", "-C", str(AMD_DIR), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        if cur != AMD_BRANCH:
+            print(f"INFO: Downloader on branch '{cur}', switching to '{AMD_BRANCH}'...")
+            subprocess.run(["git", "-C", str(AMD_DIR), "fetch", "origin", AMD_BRANCH], check=True, timeout=120)
+            subprocess.run(["git", "-C", str(AMD_DIR), "checkout", "-B", AMD_BRANCH, f"origin/{AMD_BRANCH}"], check=True, timeout=60)
+        else:
+            print(f"INFO: Downloader on branch {AMD_BRANCH} OK")
+    except Exception as e:
+        print(f"WARN: Could not check downloader branch: {e}")
+
+    cfg = AMD_DIR / "config.yaml"
+    try:
+        if cfg.exists():
+            text = cfg.read_text()
+            new = re.sub(r"^decrypt-m3u8-port:[ \t]*(''|\"\")?[ \t]*$", 'decrypt-m3u8-port: "127.0.0.1:10020"', text, flags=re.MULTILINE)
+            new = re.sub(r"^get-m3u8-port:[ \t]*(''|\"\")?[ \t]*$", 'get-m3u8-port: "127.0.0.1:20020"', new, flags=re.MULTILINE)
+            if new != text:
+                cfg.write_text(new)
+                print("INFO: Filled empty wrapper ports in config.yaml")
+    except OSError as e:
+        print(f"WARN: Could not modify config.yaml: {e}")
+
+#Task: 3 Gpac installation cuz its not fckin workin
+def install_gpac(apt, env):
+    """Installing GPAC for MP4Box"""
+    if shutil.which("MP4Box"):
+        print("MP4Box is Installed <3")
+        return
+    has_pkg = subprocess.run(
+        ["apt-cache", "show", "gpac"],
+        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+    if has_pkg:
+        r = subprocess.run([*apt, "install", "gpac"], env=env)
+        if r.returncode == 0 and shutil.which("MP4Box"):
+            print("GPAC Installed from APT.")
+            return
+                
+    print(f"GPAC is unavailable from APT.\nInstalling from source\n{GPAC_VER}\n")
+    subprocess.run(
+        [*apt, "install", "build-essential", "pkg-config", "git", "zlib1g-dev"],
+        check=True, env=env,
+)
+
+    build_dir = tempfile.mkdtemp(prefix="gpac-build-") 
+    try:
+        src = os.path.join(build_dir, "gpac")
+        subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", GPAC_VER,
+            "https://github.com/gpac/gpac.git", src],
+            check=True, env=env,
+        )
+        subprocess.run(["./configure", "--static-bin"], cwd=src, check=True)
+        subprocess.run(["make", f"-j{os.cpu_count() or 1}"], cwd=src, check=True)
+        subprocess.run(["make", "install"], cwd=src, check=True)
+    finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
+    if not shutil.which("MP4Box"):
+        raise RuntimeError("GPAC is built but MP4Box is not in the PATH.")
+    print("GPAC is Ready")
+
 
 def firstsetup():
-    # --- Check for root ---
+    #Task: 3 Check for root
     if os.geteuid() != 0:
-        print("ERROR: This script must be run as root. Exiting.")
+        print("ERROR: This script must be run as root. Exiting...")
         sys.exit(1)
 
     try:
-        # Step 1: Install required packages
+        
+        #Task: 4 Install rest of packages
+        env = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        apt = ["apt-get", "-y", "-o", "Acquire::Retries=3", "-o", "Dpkg::Lock::Timeout=60"]
+
+        subprocess.run([*apt, "update"], check=True, env=env)
         subprocess.run(
-            ["apt-get", "install", "-y", "git", "ffmpeg", "gpac", "golang-go", "wget","python3-flask","python3-yaml"],
-            check=True
+            [*apt, "install", "git", "ffmpeg", "wget",
+             "python3-flask", "python3-yaml"],
+            check=True,
+            env=env,
         )
+
+        if not ensure_go():
+            raise RuntimeError("Couldn't install Go")
+     
+        install_gpac(apt, env)
+
         print("Packages installed successfully.")
 
-        # Step 2: Download and set up Bento4
+                #Task: 5 Download and set up Bento4
         BENTO4_URL = "https://www.bok.net/Bento4/binaries/Bento4-SDK-1-6-0-641.x86_64-unknown-linux.zip"
         zip_path = PROJECT_DIR / "bento4.zip"
 
         if not BENTO4_DIR.exists():
-            print(f"Downloading Bento4 from {BENTO4_URL}...")
-            urllib.request.urlretrieve(BENTO4_URL, zip_path)
-            print("Extracting Bento4...")
+            try:
+                print(f"Downloading Bento4 from {BENTO4_URL}...")
+                req = urllib.request.Request(
+                    BENTO4_URL,
+                    headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out:
+                    shutil.copyfileobj(resp, out)
 
-            BENTO4_DIR.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                zip_ref.extractall(BENTO4_DIR)
-            os.remove(zip_path)
+                print("Extracting Bento4...")
+                BENTO4_DIR.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    zip_ref.extractall(BENTO4_DIR)
 
-            print("Bento4 installed inside project folder.")
-            
+                print("Bento4 installed inside project folder.")
+            except Exception:
+                shutil.rmtree(BENTO4_DIR, ignore_errors=True)
+                raise
+            finally:
+                if zip_path.exists():
+                    os.remove(zip_path)
+
             # Create symbolic links to Bento4 tools in /usr/local/bin
             bin_candidates = list(BENTO4_DIR.glob("Bento4*"))
             if bin_candidates:
@@ -137,25 +307,32 @@ def firstsetup():
                             os.symlink(exe_file, link_path)
                             print(f"  Created symlink: {exe_file.name}")
                     else:
-                        print("✅ Bento4 tools already available system-wide")
+                        print("Bento4 tools already available system-wide")
                         
                 except Exception as e:
                     print(f"WARN: Could not verify/create symbolic links: {e}")
                     print(f"Added existing Bento4 bin to current session PATH: {bin_dir}")
 
         # Step 3: Download and extract wrapper
-        WRAPPER_URL = "https://github.com/WorldObservationLog/wrapper/releases/download/Wrapper.x86_64.0df45b5/Wrapper.x86_64.0df45b5.zip"
+        WRAPPER_URL = "https://github.com/WorldObservationLog/wrapper/releases/download/wrapper.x86_64.latest/Wrapper.x86_64.latest.zip"
         wrapper_zip = PROJECT_DIR / "wrapper.x86_64.zip"
 
         if not WRAPPER_DIR.exists():
             print(f"Downloading wrapper from {WRAPPER_URL}...")
-            urllib.request.urlretrieve(WRAPPER_URL, wrapper_zip)
-            print("Extracting wrapper...")
-
-            WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
-            with zipfile.ZipFile(wrapper_zip, "r") as zip_ref:
-                zip_ref.extractall(WRAPPER_DIR)
-            os.remove(wrapper_zip)
+            req = urllib.request.Request(WRAPPER_URL, headers={"User-Agent": "Mozilla/5.0"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp, open(wrapper_zip, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+                print("Extracting wrapper...")
+                WRAPPER_DIR.mkdir(parents=True, exist_ok=True)
+                with zipfile.ZipFile(wrapper_zip, "r") as zip_ref:
+                    zip_ref.extractall(WRAPPER_DIR)
+            except Exception:
+                shutil.rmtree(WRAPPER_DIR, ignore_errors=True)
+                raise
+            finally:
+                if wrapper_zip.exists():
+                    os.remove(wrapper_zip)
 
             # Ensure the wrapper binary is executable (running as root, so no sudo needed)
             wrapper_bin = WRAPPER_DIR / "wrapper"
@@ -177,7 +354,7 @@ def firstsetup():
         if not AMD_DIR.exists():
             print("Cloning Apple Music Downloader...")
             subprocess.run(
-                ["git", "clone", "https://github.com/zhaarey/apple-music-downloader", str(AMD_DIR)],
+                ["git", "clone", "--branch", "v1", "https://github.com/zhaarey/apple-music-downloader", str(AMD_DIR)],
                 check=True
             )
             print("Apple Music Downloader cloned inside project folder")
@@ -200,6 +377,7 @@ def start():
         os.environ["PATH"] = f"{bin_dir}:{os.environ['PATH']}"
 
     os.environ["PATH"] = f"{WRAPPER_DIR}:{os.environ['PATH']}"
+    ensure_go()
 
     # Import and run the Flask app
     from app import app   # FIXED: no double "app.app"
