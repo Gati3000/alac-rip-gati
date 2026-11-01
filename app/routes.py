@@ -13,6 +13,11 @@ wrapper_running = False
 wrapper_needs_2fa = False
 download_process = None
 download_running = False
+DEFAULT_PREFS = {"special_audio": True, "format": "ATMOS"}
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+USER_DIR = os.path.join(os.path.dirname(PROJECT_DIR), "The Reaper", "User")
+
 
 def stream_download_logs(pipe, target_list):
     """Thread target to read logs from download process and store them."""
@@ -470,5 +475,34 @@ def get_download_folders():
         }
         
         return jsonify({"status": "ok", "folders": folders})
+    except Exception as e:
+        return jsonify({"status": "error", "msg": str(e)})
+
+def get_prefs_path():
+    os.makedirs(USER_DIR, exist_ok=True)
+    return os.path.join(USER_DIR, "prefs.json")
+
+@app.route("/get_prefs")
+def get_prefs():
+    prefs = dict(DEFAULT_PREFS)
+    try:
+        with open(get_prefs_path(), 'r') as f:
+            prefs.update(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+    return jsonify(prefs)
+
+@app.route("/save_prefs", methods=["POST"])
+def save_prefs():
+    data = request.json or {}
+    fmt = data.get("format")
+    prefs = {
+        "special_audio": bool(data.get("special_audio", True)),
+        "format": fmt if fmt in ("ATMOS", "AAC") else "ATMOS"
+    }
+    try:
+        with open(get_prefs_path(), 'w') as f:
+            json.dump(prefs, f)
+        return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)})
